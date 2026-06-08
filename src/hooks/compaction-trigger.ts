@@ -14,7 +14,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 	pi.on("agent_end", (event: any, ctx: any) => {
 		runtime.ensureConfig(ctx.cwd);
 		if (runtime.config.passive === true) return;
-		if (runtime.compactInFlight) return;
+		if (runtime.compactInFlight || runtime.compactPromise) return;
 
 		// Don't trigger compaction if Pi will auto-retry — the agent hasn't truly finished.
 		// Pi emits agent_end before its own retry check, so we must detect this ourselves.
@@ -45,11 +45,11 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 			"info",
 		);
 
-		runtime.compactInFlight = true;
+		runtime.beginCompact();
 		setTimeout(() => {
 			try {
 				if (!ctx.isIdle()) {
-					runtime.compactInFlight = false;
+					runtime.finishCompact();
 					if (hasUI) ui?.notify(
 						"Observational memory: compaction deferred — agent became busy before compaction",
 						"info",
@@ -59,7 +59,7 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 				const currentEntries = ctx.sessionManager.getBranch() as Entry[];
 				const currentTokens = rawTokensSinceLastCompaction(currentEntries);
 				if (currentTokens < runtime.config.compactAfterTokens) {
-					runtime.compactInFlight = false;
+					runtime.finishCompact();
 					if (hasUI) ui?.notify(
 						"Observational memory: compaction skipped — another compaction already ran before deferred compaction",
 						"info",
@@ -68,20 +68,17 @@ export function registerCompactionTrigger(pi: ExtensionAPI, runtime: Runtime): v
 				}
 				ctx.compact({
 					onComplete: () => {
-						runtime.compactInFlight = false;
+						runtime.finishCompact();
 						if (hasUI) ui?.notify("Observational memory: compaction complete", "info");
 					},
 					onError: (error: { message: string }) => {
-						runtime.compactInFlight = false;
-						if (error.message === "Compaction cancelled") {
-							// We already notified the user with the real reason before returning { cancel: true }.
-							return;
-						}
+						runtime.finishCompact();
+						if (error.message === "Compaction cancelled") return;
 						if (hasUI) ui?.notify(`Observational memory: ${error.message}`, "error");
 					},
 				});
 			} catch (error) {
-				runtime.compactInFlight = false;
+				runtime.finishCompact();
 				const msg = error instanceof Error ? error.message : String(error);
 				if (hasUI) ui?.notify(`Observational memory: compact threw: ${msg}`, "error");
 			}

@@ -27,6 +27,8 @@ export class Runtime {
 	consolidationPromise: Promise<void> | null = null;
 	consolidationPhase: ConsolidationPhase | undefined;
 	compactInFlight = false;
+	compactPromise: Promise<void> | null = null;
+	compactResolve: (() => void) | undefined;
 	compactHookInFlight = false;
 	resolveFailureNotified = false;
 	lastObserverError: string | undefined;
@@ -59,6 +61,30 @@ export class Runtime {
 			return { ok: false, reason: `no API key for provider "${provider}"` };
 		}
 		return { ok: true, model, apiKey: auth.apiKey as string, headers: auth.headers as Record<string, string> | undefined };
+	}
+
+	beginCompact(): void {
+		if (this.compactPromise) return;
+		this.compactInFlight = true;
+		this.compactPromise = new Promise((resolve) => {
+			this.compactResolve = resolve;
+		});
+	}
+
+	finishCompact(): void {
+		this.compactInFlight = false;
+		this.compactResolve?.();
+		this.compactResolve = undefined;
+		this.compactPromise = null;
+	}
+
+	async awaitBackgroundWork(): Promise<void> {
+		const consolidation = this.consolidationPromise;
+		const compact = this.compactPromise;
+		await Promise.allSettled([
+			...(consolidation ? [consolidation] : []),
+			...(compact ? [compact] : []),
+		]);
 	}
 
 	launchConsolidationTask(ctx: LaunchCtx, work: () => Promise<void>): Promise<void> {
